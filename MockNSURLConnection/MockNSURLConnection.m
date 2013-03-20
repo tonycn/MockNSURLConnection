@@ -26,6 +26,8 @@
 @end
 
 static IMP g_originalConnAlloc = NULL;
+static IMP g_originalConn_SendSynchronousRequest = NULL;
+
 static NSMutableDictionary *g_stubResponses = nil; // URL -> StubResponse
 
 #pragma mark -
@@ -43,6 +45,20 @@ static NSMutableDictionary *g_stubResponses = nil; // URL -> StubResponse
     [NSException raise:@"ArgumentException" format:@"didn't expect to alloc %@", self];
     return nil;
   }
+}
+
++ (NSData *)sendSynchronousRequest:(NSURLRequest *)request returningResponse:(NSURLResponse **)response error:(NSError **)error {
+  
+  MockNSHTTPURLResponse *r = [g_stubResponses objectForKey:[request.URL absoluteString]];
+  
+  if (nil == r) {
+    //    [UnexpectedStubURLRequestException raiseForURL:[_request.URL absoluteString]];
+    // ARC does not like the +raise methods - it overreleases. oh well.
+    UnexpectedStubURLRequestException *e = [[UnexpectedStubURLRequestException alloc] initWithURL:[request.URL absoluteString]];
+    [e raise];
+  }
+  *response = r;
+  return r.HTTPBody;
 }
 
 + (void) beginStubbing {
@@ -83,6 +99,8 @@ static NSMutableDictionary *g_stubResponses = nil; // URL -> StubResponse
       method_setImplementation(superMethod, selfSwizzledAlloc);
     }
   }
+  
+  [self mockConnectionImplFor_sendSynchronousRequest_returningResponse_error];
 }
 
 + (void) stopStubbing {
@@ -93,6 +111,8 @@ static NSMutableDictionary *g_stubResponses = nil; // URL -> StubResponse
   Method superMethod = class_getClassMethod(parentKlass, allocSel);
   method_setImplementation(superMethod, g_originalConnAlloc);
   g_originalConnAlloc = NULL;
+  
+  [self resetConnectionImplFor_sendSynchronousRequest_returningResponse_error];
 }
 
 + (void) stubResponse:(MockNSHTTPURLResponse*)response forURL:(NSString*)requestURL {
@@ -112,6 +132,43 @@ static NSMutableDictionary *g_stubResponses = nil; // URL -> StubResponse
   [self stubResponse:r forURL:requestURL];
 }
 
+
+#pragma mark - Mock NSUURLConnection class method "sendSynchronousRequest:returningResponse:error:"
++ (void)mockConnectionImplFor_sendSynchronousRequest_returningResponse_error {
+  
+  if (NULL == g_originalConn_SendSynchronousRequest) {
+
+    Class klass = [NSURLConnection class];
+    SEL sendSynchronousRequestSel = @selector(sendSynchronousRequest:returningResponse:error:);
+    Method superMethod = class_getClassMethod(klass, sendSynchronousRequestSel);
+    g_originalConn_SendSynchronousRequest = method_getImplementation(superMethod);
+    
+    Method selfSwizzledMethod = class_getClassMethod(self, @selector(sendSynchronousRequest:returningResponse:error:));
+    IMP selfSwizzledAlloc = method_getImplementation(selfSwizzledMethod);
+    Class urlConnClass = [NSURLConnection class];
+    Class metaClass = objc_getMetaClass(class_getName(urlConnClass));
+    class_addMethod(metaClass, sendSynchronousRequestSel, selfSwizzledAlloc, "@@:");
+    
+    /**
+     * So, we double check: if the current IMP != our swizzled IMP,
+     * this must be a subsequent setup call, so we can safely
+     * method_setImplementation to get the effect we want.
+     */
+    superMethod = class_getClassMethod(klass, sendSynchronousRequestSel);
+    if (selfSwizzledAlloc != method_getImplementation(superMethod)) {
+      method_setImplementation(superMethod, selfSwizzledAlloc);
+    }
+  }
+}
+
++ (void)resetConnectionImplFor_sendSynchronousRequest_returningResponse_error {
+  
+  Class parentKlass = [NSURLConnection class];
+  SEL sendSynchronousRequestSel = @selector(sendSynchronousRequest:returningResponse:error:);
+  Method superMethod = class_getClassMethod(parentKlass, sendSynchronousRequestSel);
+  method_setImplementation(superMethod, g_originalConn_SendSynchronousRequest);
+  g_originalConn_SendSynchronousRequest = NULL;
+}
 
 #pragma mark - NSURLConnection public overrides
 - (id)initWithRequest:(NSURLRequest *)request delegate:(id)delegate startImmediately:(BOOL)startImmediately {
